@@ -32,6 +32,7 @@
   <div class="row"><span class="label">Has Pass</span><span id="haspass">—</span></div>
   <div class="row"><span class="label">Registered Elysium address</span><span id="ely">—</span></div>
   <div class="row"><span class="label">Badge</span><span id="badge">—</span></div>
+  <div class="row"><span class="label">Badges minted</span><span id="mintedCount">…</span></div>
   <p><button id="connectBtn">Connect wallet</button>
   <button id="switchBtn" style="background:#232a3d;color:#e6e9f0">Switch to BNB Smart Chain</button></p>
 </div>
@@ -41,6 +42,13 @@
   <input id="elyInput" placeholder="Your Elysium claim address (0x…)">
   <p><button id="mintBtn" disabled>Mint Pass</button></p>
   <div id="status"></div>
+</div>
+
+<div class="card">
+  <p style="margin-top:0">Check a badge — no wallet needed:</p>
+  <input id="lookupInput" placeholder="Wallet address (0x…)">
+  <p><button id="lookupBtn">Check badge</button></p>
+  <div id="lookupResult" style="white-space:pre-wrap;color:#9aa3b2;font-size:13px"></div>
 </div>
 
 <div class="card">
@@ -75,6 +83,55 @@ document.getElementById("bscLink").href = "https://bscscan.com/address/" + PASS;
 let provider, signer, account, passContract;
 
 function say(msg) { document.getElementById("status").textContent = msg; }
+
+// ---- READ-ONLY lookups (no wallet needed). Public BSC RPCs; falls back to
+// the next one if a call fails. Agentic Wallet holders can't inject a
+// provider into a browser, so this is how they (and anyone else) check a badge.
+const RO_RPCS = ["https://bsc-dataseed.binance.org", "https://bsc.publicnode.com", "https://bsc-dataseed1.defibit.io"];
+let roPass = null, roReg = null;
+async function roContracts() {
+  if (roPass) return { pass: roPass, reg: roReg };
+  for (const url of RO_RPCS) {
+    try {
+      const p = new ethers.JsonRpcProvider(url);
+      const c = new ethers.Contract(PASS, PASS_ABI, p);
+      await c.totalSupply(); // probe: RPC must answer
+      roPass = c;
+      roReg = new ethers.Contract(REGISTRY, REG_ABI, p);
+      return { pass: roPass, reg: roReg };
+    } catch (e) { /* try next RPC */ }
+  }
+  throw new Error("All public BSC RPCs unreachable — try again later.");
+}
+
+async function loadMintedCount() {
+  try {
+    const { pass } = await roContracts();
+    document.getElementById("mintedCount").textContent = (await pass.totalSupply()).toString();
+  } catch (e) { document.getElementById("mintedCount").textContent = "—"; }
+}
+loadMintedCount();
+
+function sayLookup(msg) { document.getElementById("lookupResult").textContent = msg; }
+
+document.getElementById("lookupBtn").onclick = async () => {
+  const addr = document.getElementById("lookupInput").value.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) { sayLookup("Enter a valid wallet address (0x + 40 hex chars)."); return; }
+  sayLookup("Looking up…");
+  try {
+    const { pass, reg } = await roContracts();
+    const has = await pass.hasPass(addr);
+    if (!has) {
+      const holdsId = (await reg.balanceOf(addr)) > 0n;
+      sayLookup("No badge yet for " + addr + ".\nAgent ID holder: " + (holdsId ? "Yes — eligible to mint (free, gas only)." : "No."));
+      return;
+    }
+    const tid = await pass.tokenIdOf(addr);
+    const ely = await pass.elysiumAddressOf(addr);
+    const total = await pass.totalSupply();
+    sayLookup("✅ Holds ElysAgent Pass #" + tid + " (of " + total + " minted).\nRegistered Elysium address: " + ely + "\nView: https://bscscan.com/token/" + PASS + "?a=" + tid);
+  } catch (e) { sayLookup("Lookup failed: " + (e.shortMessage || e.message)); }
+};
 
 async function refresh() {
   if (!provider || !account) return;
