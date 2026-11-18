@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ElysAgent Pass — BSC Testnet</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0b0e14; color: #e6e9f0; max-width: 640px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: #9aa3b2; margin: 0 0 20px; }
+  .card { background: #141926; border: 1px solid #232a3d; border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid #1e2536; }
+  .row:last-child { border-bottom: 0; }
+  .label { color: #9aa3b2; }
+  .ok { color: #4ade80; } .no { color: #f87171; }
+  button { background: #f0b90b; color: #111; border: 0; border-radius: 8px; padding: 10px 16px; font-weight: 700; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input { width: 100%; box-sizing: border-box; background: #0b0e14; color: #e6e9f0; border: 1px solid #2a3348; border-radius: 8px; padding: 10px; font-family: monospace; }
+  #status { white-space: pre-wrap; color: #9aa3b2; font-size: 13px; margin-top: 10px; }
+  a { color: #7cc4ff; }
+  code { font-size: 12px; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>⛏️ ElysAgent Pass</h1>
+<p class="sub">Free soulbound badge for Binance Agent ID (.ai) holders — linked to your Elysium claim address for ElysAgent.AI ($EA). BSC testnet build.</p>
+
+<div class="card">
+  <div class="row"><span class="label">Network</span><span id="net">—</span></div>
+  <div class="row"><span class="label">Wallet</span><span id="wallet">not connected</span></div>
+  <div class="row"><span class="label">Holds Agent ID</span><span id="holds">—</span></div>
+  <div class="row"><span class="label">Has Pass</span><span id="haspass">—</span></div>
+  <div class="row"><span class="label">Registered Elysium address</span><span id="ely">—</span></div>
+  <div class="row"><span class="label">Badge</span><span id="badge">—</span></div>
+  <p><button id="connectBtn">Connect wallet</button>
+  <button id="switchBtn" style="background:#232a3d;color:#e6e9f0">Switch to BSC Testnet</button></p>
+</div>
+
+<div class="card">
+  <p style="margin-top:0">Mint your Pass (free — gas only, 1 per wallet):</p>
+  <input id="elyInput" placeholder="Your Elysium claim address (0x…)">
+  <p><button id="mintBtn" disabled>Mint Pass</button></p>
+  <div id="status"></div>
+</div>
+
+<div class="card">
+  <p style="margin:0">Contract: <code id="contractAddr"></code><br>
+  <a id="bscLink" target="_blank" rel="noopener">View on BscScan testnet →</a><br>
+  Registry (mock, testnet only): <code id="registryAddr"></code></p>
+</div>
+
+<script src="./ethers.umd.min.js"></script>
+<script>
+// ---- CONFIG (testnet). For mainnet, point REGISTRY at the real SPACE ID
+// Agent ID contract 0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F and PASS at the
+// mainnet deployment. Chain id changes to 56.
+const CHAIN_ID = 97;
+const PASS = "0x08275B53273495D6B2227CEab29dDB3E5Ea07f71";
+const REGISTRY = "0xe98eF6f90cD7c68D8cA9CF7D2B7469f7Dc1b1db9";
+const GAS_PRICE = 3000000000n; // 3 gwei — BSC testnet fee estimation returns ~1 wei and never mines
+const PASS_ABI = [
+  "function isAgentIdHolder(address) view returns (bool)",
+  "function hasPass(address) view returns (bool)",
+  "function tokenIdOf(address) view returns (uint256)",
+  "function elysiumAddressOf(address) view returns (address)",
+  "function mint(address) returns (uint256)",
+  "function totalSupply() view returns (uint256)"
+];
+const REG_ABI = ["function balanceOf(address) view returns (uint256)"];
+
+document.getElementById("contractAddr").textContent = PASS;
+document.getElementById("registryAddr").textContent = REGISTRY;
+document.getElementById("bscLink").href = "https://testnet.bscscan.com/address/" + PASS;
+
+let provider, signer, account, passContract;
+
+function say(msg) { document.getElementById("status").textContent = msg; }
+
+async function refresh() {
+  if (!provider || !account) return;
+  const net = await provider.getNetwork();
+  document.getElementById("net").textContent = "chain " + net.chainId + (Number(net.chainId) === CHAIN_ID ? " (BSC Testnet ✓)" : " — wrong network!");
+  document.getElementById("wallet").textContent = account;
+  try {
+    const reg = new ethers.Contract(REGISTRY, REG_ABI, provider);
+    const bal = await reg.balanceOf(account);
+    const holds = bal > 0n;
+    document.getElementById("holds").innerHTML = holds ? '<span class="ok">Yes ✓</span>' : '<span class="no">No — this wallet holds no Agent ID</span>';
+    const has = await passContract.hasPass(account);
+    document.getElementById("haspass").innerHTML = has ? '<span class="ok">Yes ✓</span>' : '<span class="no">No</span>';
+    if (has) {
+      const tid = await passContract.tokenIdOf(account);
+      const ely = await passContract.elysiumAddressOf(account);
+      document.getElementById("ely").textContent = ely;
+      document.getElementById("badge").innerHTML = 'Pass #' + tid + ' — <a target="_blank" rel="noopener" href="https://testnet.bscscan.com/token/' + PASS + '?a=' + tid + '">view</a>';
+    } else {
+      document.getElementById("ely").textContent = "—";
+      document.getElementById("badge").textContent = "—";
+    }
+    document.getElementById("mintBtn").disabled = !(holds && !has && Number(net.chainId) === CHAIN_ID);
+  } catch (e) { say("Read error: " + (e.shortMessage || e.message)); }
+}
+
+document.getElementById("connectBtn").onclick = async () => {
+  if (!window.ethereum) { say("No injected wallet found. Install MetaMask or open in Binance Wallet."); return; }
+  provider = new ethers.BrowserProvider(window.ethereum);
+  await provider.send("eth_requestAccounts", []);
+  signer = await provider.getSigner();
+  account = await signer.getAddress();
+  passContract = new ethers.Contract(PASS, PASS_ABI, signer);
+  window.ethereum.on("accountsChanged", () => location.reload());
+  window.ethereum.on("chainChanged", () => location.reload());
+  await refresh();
+};
+
+document.getElementById("switchBtn").onclick = async () => {
+  if (!window.ethereum) return;
+  try {
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x61" }] });
+  } catch (e) {
+    if (e.code === 4902) {
+      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{
+        chainId: "0x61", chainName: "BNB Smart Chain Testnet",
+        nativeCurrency: { name: "tBNB", symbol: "tBNB", decimals: 18 },
+        rpcUrls: ["https://bsc-testnet.publicnode.com"],
+        blockExplorerUrls: ["https://testnet.bscscan.com"]
+      }]});
+    } else { say("Switch failed: " + (e.shortMessage || e.message)); }
+  }
+  await refresh();
+};
+
+document.getElementById("mintBtn").onclick = async () => {
+  const ely = document.getElementById("elyInput").value.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(ely)) { say("Enter a valid Elysium address (0x + 40 hex chars)."); return; }
+  try {
+    say("Sending mint transaction…");
+    const tx = await passContract.mint(ely, { gasPrice: GAS_PRICE });
+    say("Tx sent: " + tx.hash + "\nWaiting for confirmation…");
+    const rc = await tx.wait();
+    say("✅ Minted! Block " + rc.blockNumber + "\nTx: https://testnet.bscscan.com/tx/" + tx.hash);
+    await refresh();
+  } catch (e) { say("Mint failed: " + (e.shortMessage || e.message)); }
+};
+</script>
+</body>
+</html>
